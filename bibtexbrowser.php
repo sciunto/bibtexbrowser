@@ -1441,6 +1441,11 @@ class BibEntry {
     // returns an empty string if no url present
     $str .= $this->getUrlLink();
 
+    if ($this->hasField('arxiv')) {
+      $str .= ' <a href="http://http://arxiv.org/abs/'.$this->getField("arxiv").'">[arXiv]</a>';
+    }
+
+
     if ($this->hasField('doi')) {
       $str .= ' <a href="http://dx.doi.org/'.$this->getField("doi").'">[doi]</a>';
     }
