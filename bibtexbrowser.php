@@ -1442,7 +1442,7 @@ class BibEntry {
     $str .= $this->getUrlLink();
 
     if ($this->hasField('arxiv')) {
-      $str .= ' <a href="http://http://arxiv.org/abs/'.$this->getField("arxiv").'">[arXiv]</a>';
+      $str .= ' <a href="http://arxiv.org/abs/'.$this->getField("arxiv").'">[arXiv]</a>';
     }
 
 
