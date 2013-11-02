@@ -19,6 +19,14 @@ if (!defined('BIBTEXBROWSER')) {
 // this if block ends at the very end of this file, after all class and function declarations.
 define('BIBTEXBROWSER','v__GITHUB__');
 
+// support for configuration
+// you may have bibtexbrowser_configure('ENCODING', 'latin1) in bibtexbrowser.local.php
+global $CONFIGURATION;
+$CONFIGURATION = array();
+function bibtexbrowser_configure($key, $value) { 
+  global $CONFIGURATION;
+  $CONFIGURATION[$key]=$value;
+}
 
 // *************** CONFIGURATION
 // I recommend to put your changes in bibtexbrowser.local.php
@@ -58,7 +66,7 @@ define('BIBTEXBROWSER','v__GITHUB__');
 // Wrapper to use when we are included by another script 
 @define('BIBTEXBROWSER_EMBEDDED_WRAPPER', 'NoWrapper');
 
-// Wrapper to use when we are included by another script 
+// Main class to use
 @define('BIBTEXBROWSER_MAIN', 'Dispatcher');
 
 // default order functions
@@ -149,6 +157,12 @@ define('Q_INNER_TYPE', 'x-bibtex-type');// used for representing the type of the
 
 @error_reporting(/*pp4php:serl*/E_ALL/*lres*/);
 
+function config_value($key) {
+  global $CONFIGURATION;
+  if (isset($CONFIGURATION[$key])) { return $CONFIGURATION[$key]; }
+  if (defined($key)) { return constant($key); }
+  die('no such configuration: '.$key);
+}
 
 /** parses $_GET[Q_FILE] and puts the result (an object of type BibDataBase) in $_GET[Q_DB].
 See also zetDB().
@@ -170,7 +184,7 @@ function zetDB($bibtex_filenames) {
 /** @nodoc */
 function default_message() {
 
-  if (BIBTEXBROWSER_NO_DEFAULT) { return; }
+  if (config_value('BIBTEXBROWSER_NO_DEFAULT')==true) { return; }
 
   ?>
   <div id="bibtexbrowser_message">
@@ -317,6 +331,14 @@ function _zetDB($bibtex_filenames) {
   return array(&$db, $parse, $updated, $saved);
 } // end function setDB
 
+// internationalization
+function __($msg) {
+  global $BIBTEXBROWSER_LANG;
+  if (isset($BIBTEXBROWSER_LANG[$msg])) { 
+    return $BIBTEXBROWSER_LANG[$msg]; 
+  }
+  return $msg;
+}
 
 // factories
 // may be overridden in bibtexbrowser.local.php
@@ -367,7 +389,7 @@ class StateBasedBibtexParser {
     $this->delegate = &$delegate;
   }
 
-  function parse($bibfilename) {
+  function parse($handle) {
     $delegate = &$this->delegate;
     // STATE DEFINITIONS
     @define('NOTHING',1);
@@ -398,8 +420,6 @@ class StateBasedBibtexParser {
 
     $delegate->beginFile();
 
-    $handle = fopen($bibfilename, "r");
-    if (!$handle) die ('cannot open '.$bibfilename);
     // if you encounter this error "Allowed memory size of xxxxx bytes exhausted"
     // then decrease the size of the temp buffer below
     $bufsize=BUFFERSIZE;
@@ -566,7 +586,6 @@ class StateBasedBibtexParser {
     } // end for
     } // end while
     $delegate->endFile();
-    fclose($handle);
     //$d = &$this->delegate;print_r($d);
   } // end function
 } // end class
@@ -607,6 +626,15 @@ class XMLPrettyPrinter {
   }
 } // end class XMLPrettyPrinter
 
+/** represents @string{k=v} */
+class StringEntry {
+  function StringEntry($k, $v, $filename) {
+    $this->name=$k;
+    $this->value=$v;
+    $this->filename=$filename;
+  }
+} // end class StringEntry
+
 /** builds arrays of BibEntry objects from a bibtex file.
 usage:
 <pre>
@@ -631,16 +659,18 @@ class BibDBBuilder {
 
   var $currentEntry;
 
-  function setData(&$builtdb, &$stringdb) {
-    $this->builtdb = $builtdb;
-    $this->stringdb = $stringdb;
-    return $this;
-  }
+  function build($bibfilename, $handle = NULL) {
+  
+    $this->filename = $bibfilename;    
+    if ($handle == NULL) {
+      $handle = fopen($bibfilename, "r");
+    }
 
-  function build($filename) {
-    $this->filename = $filename;    
+    if (!$handle) die ('cannot open '.$bibfilename);
+    
     $parser = new StateBasedBibtexParser($this);
-    $parser->parse($filename);
+    $parser->parse($handle);
+    fclose($handle);
     //print_r(array_keys(&$this->builtdb));
     //print_r(&$this->builtdb);
   }
@@ -690,11 +720,11 @@ class BibDBBuilder {
       if (isset($this->stringdb[$stringKey]))
       {
         // this field will be formated later by xtrim and latex2html
-        $entryvalue_array[$k]=$this->stringdb[$stringKey];
+        $entryvalue_array[$k]=$this->stringdb[$stringKey]->value;
 
         // we keep a trace of this replacement
         // so as to produce correct bibtex snippets
-        $this->currentEntry->constants[$stringKey]=$this->stringdb[$stringKey];
+        $this->currentEntry->constants[$stringKey]=$this->stringdb[$stringKey]->value;
       }
     }
     $entryvalue=implode('',$entryvalue_array);
@@ -719,10 +749,10 @@ class BibDBBuilder {
   function endEntry($entrysource) {
   
     // we add a timestamp
-    $this->currentEntry->setTimestamp();
+    $this->currentEntry->timestamp();
     
     // we add a key if there is no key
-    if (!$this->currentEntry->hasField(Q_KEY)) {
+    if (!$this->currentEntry->hasField(Q_KEY) && $this->currentEntry->getType()!='string') {
       $this->currentEntry->setField(Q_KEY,md5($this->currentEntry->getTitle().implode('',$this->currentEntry->getRawAuthors())));
     }
     
@@ -743,9 +773,9 @@ class BibDBBuilder {
     // we add it to the string database
     else if ($this->currentEntry->getType()=='string') {
       foreach($this->currentEntry->fields as $k => $v) {
-        $k!=Q_INNER_TYPE and $this->stringdb[$k]=$v;
+        $k!=Q_INNER_TYPE and $this->stringdb[$k]=new StringEntry($k,$v,$this->filename);
       }
-    } 
+    }
     
     // we add it to the database
     else {
@@ -941,7 +971,7 @@ class BibEntry {
   }
   
   /** Adds timestamp to this object */
-  function setTimestamp() {
+  function timestamp() {
     $this->timestamp = time();
   }
   /** Returns the timestamp of this object */
@@ -957,7 +987,9 @@ class BibEntry {
 
   /** Sets the key of this bib entry. */
   function setKey($value) {
-    $this->setField(Q_KEY,$value);
+    // Slashes are not allowed in keys because they don't play well with web servers
+    // if url-rewriting is used
+    $this->setField(Q_KEY,str_replace('/','-',$value));
   }
 
   /** Sets a field of this bib entry. */
@@ -1204,7 +1236,7 @@ class BibEntry {
     // e.g. @STRING{hp_Jean-MarcJézéquel="http://www.irisa.fr/prive/jezequel/"}
     $homepage = strtolower('hp_'.preg_replace('/ /', '', $author));
     if (isset($_GET[Q_DB]->stringdb[$homepage]))
-      $author='<a href="'.$_GET[Q_DB]->stringdb[$homepage].'">'.$author.'</a>';
+      $author='<a href="'.$_GET[Q_DB]->stringdb[$homepage]->value.'">'.$author.'</a>';
     return $author;
   }
 
@@ -1315,46 +1347,48 @@ class BibEntry {
 
   /** Outputs HTML line according to layout */
   function toHTML() {
+      $result = '';
       switch(BIBTEXBROWSER_LAYOUT) { // open row
         case 'list':
-          echo '<li class="bibline">';
+          $result .= '<li class="bibline">';
           break;
         case 'ordered_list':
-          echo '<li class="bibline">';
+          $result .= '<li class="bibline">';
           break;
         case 'table':
-          echo '<tr class="bibline"><td class="bibref">';
+          $result .= '<tr class="bibline"><td class="bibref">';
           break;
         case 'definition':
-          echo '<dl class="bibline"><dt class="bibref">';
+          $result .= '<dl class="bibline"><dt class="bibref">';
           if (ABBRV_TYPE=='none') { die ('Cannot define an empty term!'); }
           break;
       }
-      echo $this->anchor();
+      $result .= $this->anchor();
       switch(BIBTEXBROWSER_LAYOUT) { // close bibref and open bibitem
         case 'table':
-          echo $this->getAbbrv().'</td><td class="bibitem">';
+          $result .= $this->getAbbrv().'</td><td class="bibitem">';
           break;
         case 'definition':
-          echo $this->getAbbrv().'</dt><dd class="bibitem">';
+          $result .= $this->getAbbrv().'</dt><dd class="bibitem">';
           break;
       }
-      echo bib2html($this);
-      echo $this->bib2links();
+      $result .= bib2html($this);
+      $result .= $this->bib2links();
       switch(BIBTEXBROWSER_LAYOUT) { // close row
         case 'list':
-          echo '</li>'."\n";
+          $result .= '</li>'."\n";
           break;
         case 'ordered_list':
-          echo '</li>'."\n";
+          $result .= '</li>'."\n";
           break;
         case 'table':
-          echo '</td></tr>'."\n";
+          $result .= '</td></tr>'."\n";
           break;
         case 'definition':
-          echo '</dd></dl>'."\n";
+          $result .= '</dd></dl>'."\n";
           break;
       }
+      return $result;
   }
 
 
@@ -1406,7 +1440,7 @@ class BibEntry {
       $url_parts[]='rft_id='.s3988('info:doi/'.$this->getField("doi"));
     }
 
-    // referrer, the id pf a collection of objects
+    // referrer, the id of a collection of objects
     // see also http://www.openurl.info/registry/docs/pdf/info-sid.pdf    
     $url_parts[]='rfr_id='.s3988('info:sid/'.@$_SERVER['HTTP_HOST'].':'.@$_GET[Q_FILE]);
 
@@ -1628,32 +1662,32 @@ return
   // Books
     array(
       'query' => array(Q_TYPE=>'book|proceedings'),
-      'title' => 'Books'
+      'title' => __('Books')
     ),
   // Book chapters
     array(
       'query' => array(Q_TYPE=>'incollection|inbook'),
-      'title' => 'Book Chapters'
+      'title' => __('Book Chapters')
     ),
   // Journal / Bookchapters
     array(
       'query' => array(Q_TYPE=>'article'),
-      'title' => 'Refereed Articles'
+      'title' => __('Refereed Articles')
     ),
   // conference papers
     array(
       'query' => array(Q_TYPE=>'inproceedings|conference',Q_EXCLUDE=>'workshop'),
-      'title' => 'Refereed Conference Papers'
+      'title' => __('Refereed Conference Papers')
     ),
   // workshop papers
     array(
       'query' => array(Q_TYPE=>'inproceedings',Q_SEARCH=>'workshop'),
-      'title' => 'Refereed Workshop Papers'
+      'title' => __('Refereed Workshop Papers')
     ),
   // misc and thesis
     array(
       'query' => array(Q_TYPE=>'misc|phdthesis|mastersthesis|bachelorsthesis|techreport'),
-      'title' => 'Other Publications'
+      'title' => __('Other Publications')
     )
   );
 }
@@ -1691,13 +1725,13 @@ function DefaultBibliographyStyle(&$bibentry) {
   // now the book title
   $booktitle = '';
   if ($type=="inproceedings") {
-      $booktitle = 'In '.$bibentry->getField(BOOKTITLE); }
+      $booktitle = __('In').' '.$bibentry->getField(BOOKTITLE); }
   if ($type=="incollection") {
-      $booktitle = 'Chapter in '.$bibentry->getField(BOOKTITLE);}
+      $booktitle = __('Chapter in').' '.$bibentry->getField(BOOKTITLE);}
   if ($type=="inbook") {
-      $booktitle = 'Chapter in '.$bibentry->getField('chapter');}
+      $booktitle = __('Chapter in').' '.$bibentry->getField('chapter');}
   if ($type=="article") {
-      $booktitle = 'In '.$bibentry->getField("journal");}
+      $booktitle = __('In').' '.$bibentry->getField("journal");}
 
   //// we may add the editor names to the booktitle
   $editor='';
@@ -1715,16 +1749,16 @@ function DefaultBibliographyStyle(&$bibentry) {
 
   $publisher='';
   if ($type=="phdthesis") {
-      $publisher = 'PhD thesis, '.$bibentry->getField(SCHOOL);
+      $publisher = __('PhD thesis').', '.$bibentry->getField(SCHOOL);
   }
   if ($type=="mastersthesis") {
-      $publisher = 'Master\'s thesis, '.$bibentry->getField(SCHOOL);
+      $publisher = __('Master\'s thesis').', '.$bibentry->getField(SCHOOL);
   }
   if ($type=="bachelorsthesis") {
-      $publisher = 'Bachelor\'s thesis, '.$bibentry->getField(SCHOOL);
+      $publisher = __('Bachelor\'s thesis').', '.$bibentry->getField(SCHOOL);
   }
   if ($type=="techreport") {
-      $publisher = 'Technical report, '.$bibentry->getField("institution");
+      $publisher = __('Technical report').', '.$bibentry->getField("institution");
   }
   
   if ($type=="misc") {
@@ -1738,7 +1772,7 @@ function DefaultBibliographyStyle(&$bibentry) {
   if ($publisher!='') $entry[] = '<span class="bibpublisher">'.$publisher.'</span>';
 
 
-  if ($bibentry->hasField('volume')) $entry[] =  "volume ".$bibentry->getField("volume");
+  if ($bibentry->hasField('volume')) $entry[] =  __('volume').' '.$bibentry->getField("volume");
 
 
   if ($bibentry->hasField(YEAR)) $entry[] = $bibentry->getYear();
@@ -2244,11 +2278,12 @@ function query2title(&$query) {
         // and we remove the regexp modifiers ^ $
         $v = preg_replace('/[$^]/','',$v); 
       }
-      $headers[$k] = ucwords($k).': '.ucwords(htmlspecialchars($v));
+      $headers[$k] = __(ucwords($k)).': '.ucwords(htmlspecialchars($v));
   }
     // special cases
-    if (isset($headers[Q_ALL])) $headers[Q_ALL] = 'Publications in '.htmlspecialchars($_GET[Q_FILE]);
-    if (isset($headers[Q_AUTHOR])) $headers[Q_AUTHOR] = 'Publications of '.htmlspecialchars($_GET[Q_AUTHOR]);
+    if (isset($headers[Q_ALL])) $headers[Q_ALL] = __('Publications in').' '.htmlspecialchars($_GET[Q_FILE]);
+    if (isset($headers[Q_AUTHOR])) $headers[Q_AUTHOR] = __('Publications of')
+                                        .' '.htmlspecialchars($_GET[Q_AUTHOR]);
     return join(' &amp; ',$headers);
 }
 }
@@ -2423,7 +2458,7 @@ class SimpleDisplay  {
       // by default, index are in decreasing order
       // so that when you add a publicaton recent , the indices of preceding publications don't change
       $bib->setIndex($count-($i++));
-      $bib->toHTML();
+      echo $bib->toHTML();
       
       $pred = $bib;
     } // end foreach
@@ -2789,12 +2824,15 @@ class BibDataBase {
   }
   
   /** Updates a database (replaces the new bibtex entries by the most recent ones) */ 
-  function update($filename) {
+  function update($filename) {  
+    $this->update_internal($filename, NULL);
+  }
   
+  /** See update */ 
+  function update_internal($resource_name, $resource) {
     $empty_array = array();
     $db = createBibDBBuilder();
-    $db->setData($empty_array, $this->stringdb);
-    $db->build($filename);
+    $db->build($resource_name, $resource);
     
     $this->stringdb = array_merge($this->stringdb, $db->stringdb);
         
@@ -2817,13 +2855,21 @@ class BibDataBase {
     // some entries have been removed
     foreach ($this->bibdb as $e) {
       if (!isset($result[$e->getKey()]) 
-          && $e->filename==$filename // bug reported by Thomas on Dec 4 2012
+          && $e->filename==$resource_name // bug reported by Thomas on Dec 4 2012
          ) {
         //echo 'deleting...<br/>';
         unset($this->bibdb[$e->getKey()]);
       }
     }
-      
+
+    // some @string have been removed
+    foreach ($this->stringdb as $k=>$e) {
+      if (!isset($db->stringdb[$k]) 
+          && $e->filename==$resource_name ) {
+        //echo 'deleting...<br/>';
+        unset($this->stringdb[$e->name]);
+      }
+    }
   }
 
   /** Creates a new empty database */
@@ -3316,7 +3362,7 @@ class PagedDisplay {
       $index = ($this->page-1)*PAGE_SIZE + $i;
       if (isset($this->entries[$index])) {
         $bib = $this->entries[$index];       
-        $bib->toHTML();
+        echo $bib->toHTML();
         
       } else {
         //break;
@@ -3484,6 +3530,8 @@ class Dispatcher {
       return;
     }
     
+    if (!isset($_GET[Q_FILE])) { die('$_GET[\''.Q_FILE.'\'] is not set!'); }
+
     // first we set the database (load from disk or parse the bibtex file)
     if (!isset($_GET[Q_DB])) { setDB(); }
     
@@ -3522,8 +3570,7 @@ class Dispatcher {
        $selectedEntries = array_values($selectedEntries);
        
        //echo '<pre>';print_r($selectedEntries);echo '</pre>';
-       
-       
+              
        if ($this->displayer=='') {
          $this->displayer = BIBTEXBROWSER_DEFAULT_DISPLAY;
        }
@@ -3537,8 +3584,7 @@ class Dispatcher {
         $options = json_decode($_GET['dopt'],true);
       }     
        
-      // required for PHP4 to have this intermediate variable
-      
+      // required for PHP4 to have this intermediate variable      
       $x = new $this->displayer();
       
       if (method_exists($x,'setEntries')) {
@@ -3654,9 +3700,10 @@ class Dispatcher {
   }
 
   function key() {
+    $entries = array();
+    // case 1: this is a single key
     if ($_GET[Q_DB]->contains($_GET[Q_KEY])) {
-      $bibentry = $_GET[Q_DB]->getEntryByKey($_GET[Q_KEY]);
-      $entries = array($bibentry);
+      $entries[] = $_GET[Q_DB]->getEntryByKey($_GET[Q_KEY]);
       if (isset($_GET['astext'])) {
         $bibdisplay = new BibtexDisplay();
         $bibdisplay->setEntries($entries);
@@ -3665,10 +3712,14 @@ class Dispatcher {
         $bibdisplay = createBibEntryDisplay();
         $bibdisplay->setEntries($entries);
         new $this->wrapper($bibdisplay,$bibdisplay->metadata());
-      }
+      }      
       return 'END_DISPATCH';
     }
-    else { nonExistentBibEntryError(); }
+    
+    // case two: multiple keys
+    if (preg_match('/[|,]/',$_GET[Q_KEY])) {
+      $this->query[Q_SEARCH]=str_replace(',','|',$_GET[Q_KEY]);    
+    } else { nonExistentBibEntryError(); } 
   }
 
   /** is used to remotely analyzed a situation */
